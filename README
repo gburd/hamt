@@ -1,0 +1,25 @@
+Ideal Hash Array Mapped Tries: an Erlang functional datatype
+
+The Hash Array Mapped Trie (HAMT) is based on the simple notion of hashing a
+key and storing the key in a trie based on this hash value. The AMT is used to
+implement the required structure e#ciently. The Array Mapped Trie (AMT) is a
+versatile data structure and yields attractive alternative to contemporary
+algorithms in many applications. Here I describe how it is used to develop Hash
+Trees with near ideal characteristics that avoid the traditional problem,
+setting the size of the initial root hash table or incurring the high cost of
+dynamic resizing to achieve an acceptable performance.
+
+Based on the paper "Ideal Hash Tries" by Phil Bagwell [2000].
+@ARTICLE{Bagwell01idealhash,
+    author = {Phil Bagwell},
+    title = {Ideal Hash Trees},
+    journal = {Es Grands Champs},
+    year = {2001},
+    volume = {1195}
+}
+http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.21.6279
+http://lampwww.epfl.ch/papers/idealhashtrees.pdf
+http://en.wikipedia.org/wiki/Hash_array_mapped_trie
+
+This is an experiment in functional datatypes in Erlang.  At some point I'll
+mature this into a persistent concurrent hash array mapped trie (ctrie).
