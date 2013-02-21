@@ -1,0 +1,12 @@
+{application, hamt,
+ [
+  {description, "Hash Array Mapped Tries"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, {hamt_app, []}},
+  {env, []}
+ ]}.
