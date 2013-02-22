@@ -235,26 +235,43 @@ delete(Key, {hamt, Node}=T)
   when is_binary(Key) ->
     case delete_1(hash(Key), Key, Node, 0) of
         not_found -> T;
-        delete -> {hamt, nil};
-        N -> {hamt, N}
+        {snode, Key, _} -> {hamt, nil};
+        {snode, _, _}=N -> {hamt, N};
+        {cnode, _, _}=N -> {hamt, N}
     end.
 
-delete_1(H, Key, {cnode, Bitmap, Nodes}=CNode, L)
+delete_1(H, Key, {cnode, Bitmap, Nodes}, L)
   when is_integer(L), L =< 30 ->
     Bit = bitpos(H, L),
     Idx = index(Bit, Bitmap),
     case exists(Bit, Bitmap) of
         true ->
             case delete_1(H, Key, ba_get(Idx, Nodes), L + 5) of
-                not_found -> not_found;
-                delete -> delete_2(Key, Bit, CNode);
-                N -> {cnode, Bitmap, ba_set(Idx, N, Nodes)}
+                {cnode, _, _}=CN ->
+                    {cnode, Bitmap, ba_set(Idx, CN, Nodes)};
+                {snode, Key, _} ->
+                    case length(Nodes) of
+                        2 ->
+                            [{snode, _, _}=SN] = ba_del(Key, Nodes),
+                            SN;
+                        false ->
+                            {cnode, (Bitmap bxor Bit), ba_del(Key, Nodes)}
+                    end;
+                {snode, _, _}=SN ->
+                    case length(Nodes) > 1 of
+                        true ->
+                            {cnode, Bitmap, ba_set(Idx, SN, Nodes)};
+                        false ->
+                            SN
+                    end;
+                not_found ->
+                    not_found
             end;
         false ->
             not_found
     end;
-delete_1(_H, Key, {snode, Key, _}, _L) ->
-    delete;
+delete_1(_H, Key, {snode, Key, _}=SN, _L) ->
+    SN;
 delete_1(_H, _Key, {snode, _, _}, _L) ->
     not_found;
 delete_1(_H, Key, {lnode, List}, _L) ->
@@ -266,16 +283,6 @@ delete_1(_H, Key, {lnode, List}, _L) ->
         false ->
             {snode, Key, lists:keyfind(Key, 2, List)}
     end.
-
-%% @doc This CNode only has 2 elements in it and one is about to be
-%%      be deleted, time to collapse this CNode into an SNode.
-delete_2(Key, _Bit, {cnode, _Bitmap, Nodes})
-  when length(Nodes) =:= 2 ->
-    [{snode, _, _}=SN] = ba_del(Key, Nodes),
-    SN;
-%% @doc Remove the right key and update the bitmap
-delete_2(Key, Bit, {cnode, Bitmap, Nodes}) ->
-    {cnode, (Bitmap bxor Bit), ba_del(Key, Nodes)}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -409,9 +416,13 @@ del_one_of_many_keys_test() ->
                  {hamt,{snode,<<"k2">>,<<"v2">>}}).
 
 del_causes_cascading_cnode_collapse_test() ->
-    H = hamt:put([{<<X>>, <<X>>} || X <- lists:seq(1,5)], hamt:new()),
-    ?assertEqual(hamt:delete(<<5>>, H),
-                 hamt:put([{<<X>>, <<X>>} || X <- lists:seq(1,4)], hamt:new())).
+    ?assertEqual(hamt:delete(<<5>>, hamt:put([{<<X>>, <<X>>} || X <- lists:seq(1,6)], hamt:new())),
+                 {hamt,{cnode,17629440,
+                        [{snode,<<3>>,<<3>>},
+                         {snode,<<6>>,<<6>>},
+                         {snode,<<1>>,<<1>>},
+                         {snode,<<2>>,<<2>>},
+                         {snode,<<4>>,<<4>>}]}}).
 
 put_lots_test() ->
     KVPs = [{<<X>>, <<X>>} || X <- lists:seq(1,10000)],
