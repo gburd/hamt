@@ -44,7 +44,11 @@
 %% -------------------------------------------------------------------------
 %% Operations:
 %%
-%% - new(): returns empty hamt.
+%% - new(): returns empty hamt that uses a 32bit hash function to map
+%%   keys into the trie.
+%%
+%% - new(32,64,128,160): returns empty hamt that uses the specified
+%%   size hash function to map keys into the trie.
 %%
 %% - is_empty(T): returns 'true' if T is an empty hamt, and 'false'
 %%   otherwise.
@@ -82,80 +86,97 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([new/0, is_empty/1, get/2, put/2, put/3, delete/2,
+-export([new/0, new/1,
+         is_empty/1, get/2, put/2, put/3, delete/2,
          map/2, fold/3,
-         from_list/1, to_list/1]).
+         from_list/1, from_list/2, to_list/1]).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% The Hamt data structure consists of:
 %% - {hamt, nil | {SNode, CNode, LNode}
+%% - {hamt, nil | {hamt, {SNode, CNode, LNode}}
 %%   - {snode, Key::binary(), Value::binary()}
 %%   - {cnode, Bitmap, Branch}
 %%   - {lnode, [snode]}
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Some types.
+-export_type([hamt/0, hamt_hash_fn/0]).
 
--export_type([hamt/0]).
+-type hamt_hash_fn() :: {non_neg_integer(), fun((any()) -> binary())}.
+-type hamt_snode()   :: {snode, any(), any()}.
+-type hamt_lnode()   :: {lnode, [hamt_snode()]}.
+-type hamt_cnode()   :: {cnode, non_neg_integer(),
+                         [hamt_snode() | hamt_cnode() | hamt_lnode()]}.
+-opaque hamt()       :: {hamt, nil | hamt_hash_fn(), nil | hamt_cnode()}.
 
--type hamt_snode() :: {snode, binary(), binary()}.
--type hamt_lnode() :: {lnode, [hamt_snode()]}.
--type hamt_cnode() :: {cnode, non_neg_integer(), [hamt_snode() | hamt_cnode() | hamt_lnode()]}.
--opaque hamt()     :: {hamt, non_neg_integer(), nil | hamt_cnode()}.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
+%% @doc Returns a new, empty trie that uses phash2 to generate
+%%      32bit hash codes for keys.
 -spec new() -> hamt().
+new() ->    {hamt, 32, nil}.
 
-new() ->
-    {hamt, nil}.
+%% @doc Returns a new, empty trie that uses the specified
+%%      number of bits when hashing keys.
+-spec new(32|64|128|160) -> hamt().
+new(HashSize) ->  {hamt, HashSize, nil}.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+-spec hash(32|64|128|160, any()) -> non_neg_integer().
+hash(HashSize, X)
+  when not is_binary(X) ->
+    hash(HashSize, term_to_binary(X));
+hash(32,  X) -> murmur3:hash(32, X);
+%hash(32,  X) -> erlang:phash2(X);
+hash(64,  X) -> <<I:64/integer, _/binary>>  = crypto:sha(X), I;
+hash(128, X) -> <<I:128/integer, _/binary>> = crypto:sha(X), I;
+hash(160, X) -> <<I:160/integer>> = crypto:sha(X), I.
 
--spec is_empty(Hamt) -> boolean() when
-      Hamt :: hamt().
-
-is_empty({hamt, nil}) ->
+%% @doc Returns true when the trie is empty.
+-spec is_empty(Hamt::hamt()) -> boolean().
+is_empty({hamt, _, nil}) ->
     true;
-is_empty(_) ->
+is_empty({hamt, _, _}) ->
     false.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec get(Key, Hamt) -> not_found | Value when
-      Key   :: binary(),
-      Value :: binary(),
-      Hamt  :: hamt().
-
-get(_Key, {hamt, nil}) ->
-    not_found;
-get(Key, {hamt, {snode, Key, Value}}) ->
+%% @doc This function searches for a key in a trie. Returns Value where
+%%      Value is the value associated with Key, or error if the key is not
+%%      present.
+-spec get(Key::any(), Hamt::hamt()) -> {error, not_found} | any().
+get(_Key, {hamt, _, nil}) ->
+    {error, not_found};
+get(Key, {hamt, _, {snode, Key, Value}}) ->
     Value;
-get(Key, {hamt, {cnode, _Bitmap, _Nodes}=CN}) ->
-    case get_1(hash(Key), CN, 0) of
+get(_Key, {hamt, _, {snode, _, _}}) ->
+    {error, not_found};
+get(Key, {hamt, HashSize, {cnode, _Bitmap, _Nodes}=CN}) ->
+    case get_1(hash(HashSize, Key), CN, 0, max_depth(HashSize)) of
         none ->
-            not_found;
+            {error, not_found};
         {Key, Value} ->
             Value;
         {list, List} ->
             case get_2(Key, List) of
-                none -> not_found;
-                {Key, Value} -> Value;
-                {_Key, _Value} -> not_found
+                none ->
+                    {error, not_found};
+                {Key, Value} ->
+                    Value;
+                {_Key, _Value} ->
+                    {error, not_found}
             end;
         {_Key, _Value} ->
-            not_found
+            {error, not_found}
     end.
 
-get_1(H, {cnode, Bitmap, Nodes}, L) ->
-    Bit = bitpos(H, L),
+get_1(Hash, {cnode, Bitmap, Nodes}, L, M) when L =< M ->
+    Bit = bitpos(Hash, L),
     case exists(Bit, Bitmap) of
-        true -> get_1(H, ba_get(index(Bit, Bitmap), Nodes), L + 5);
-        false -> none
+        true ->
+            get_1(Hash, ba_get(index(Bit, Bitmap), Nodes), L + 5, M);
+        false ->
+            none
     end;
-get_1(_H, {snode, Key, Value}, _L) ->
+get_1(_Hash, _, L, M) when L > M ->
+    none;
+get_1(_Hash, {snode, Key, Value}, _L, _M) ->
     {Key, Value};
-get_1(_H, {lnode, List}, _L) when is_list(List) ->
+get_1(_Hash, {lnode, List}, _L, _M)
+  when is_list(List) ->
     {list, List}.
 
 get_2(_Key, []) ->
@@ -165,96 +186,84 @@ get_2(Key, [{Key, Value} | _Rest]) ->
 get_2(Key, [{_DifferentKey, _Value} | Rest]) ->
     get_2(Key, Rest).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% @doc This function converts the Key - Value list List to a trie.
+-spec from_list([{any(), any()}]) -> hamt().
+from_list(List) ->
+    put(List, hamt:new()).
 
-from_list(L) ->
-    put(L, hamt:new()).
+-spec from_list([{any(), any()}], 32|64|128|160) -> hamt().
+from_list(List, HashSize) ->
+    put(List, hamt:new(HashSize)).
 
-to_list({hamt, _}=T) ->
-    fold(fun(Key, Value, Acc) -> [{Key, Value} | Acc] end, T, []).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec put([{Key, Value}], Hamt1) -> Hamt2 when
-      Key   :: binary(),
-      Value :: binary(),
-      Hamt1 :: hamt(),
-      Hamt2 :: hamt().
-
-put([], {hamt, _Node}=T) ->
+-spec put([{Key::any(), Value::any()}], Hamt1::hamt()) -> Hamt2::hamt().
+put([], {hamt, _, _Node}=T) ->
     T;
-put([{Key, Value} | Rest], {hamt, _Node}=T) ->
+put([{Key, Value} | Rest], {hamt, _, _Node}=T) ->
     put(Rest, put(Key, Value, T)).
 
--spec put(Key, Value, Hamt1) -> Hamt2 when
-      Key   :: binary(),
-      Value :: binary(),
-      Hamt1 :: hamt(),
-      Hamt2 :: hamt().
+%% @doc This function converts the trie to a list representation.
+to_list({hamt, _, _}=T) ->
+    fold(fun(Key, Value, Acc) -> [{Key, Value} | Acc] end, T, []).
 
-put(Key, Value, {hamt, nil})
-  when is_binary(Key), is_binary(Value) ->
-    {hamt, {snode, Key, Value}};
-put(Key, Value, {hamt, Node})
-  when is_binary(Key), is_binary(Value) ->
-    {hamt, put_1(hash(Key), Key, Value, Node, 0)}.
+%% @doc This function stores a Key - Value pair in a trie. If the Key
+%%      already exists in Hamt1, the associated value is replaced by Value.
+-spec put(Key::any(), Value::any(), Hamt1::hamt()) -> Hamt2::hamt().
+put(Key, Value, {hamt, HashSize, nil}) ->
+    {hamt, HashSize, {snode, Key, Value}};
+put(Key, Value, {hamt, HashSize, Node}) ->
+    {hamt, HashSize, put_1(hash(HashSize, Key), Key, Value, Node, 0, max_depth(HashSize))}.
 
-put_1(H, Key, Value, {cnode, Bitmap, Nodes}, L) when is_integer(L), L =< 30 ->
-    Bit = bitpos(H, L),
+put_1(Hash, Key, Value, {cnode, Bitmap, Nodes}, L, M)
+  when L =< M ->
+    Bit = bitpos(Hash, L),
     Idx = index(Bit, Bitmap),
     case exists(Bit, Bitmap) of
         true ->
-            CN = put_1(H, Key, Value, ba_get(Idx, Nodes), L + 5),
+            CN = put_1(Hash, Key, Value, ba_get(Idx, Nodes), L + 5, M),
             {cnode, Bitmap, ba_set(Idx, CN, Nodes)};
         false ->
             {cnode, (Bitmap bor Bit), ba_ins(Idx, {snode, Key, Value}, Nodes)}
     end;
-put_1(_H, Key, Value, {snode, Key, _}, _L) ->
+put_1(_Hash, Key, Value, {snode, Key, _}, _L, _M) ->
     {snode, Key, Value};
-put_1(H, Key, Value, {snode, SNKey, SNValue}, L) when is_integer(L), L =< 30 ->
-    put_1(H, Key, Value, split(SNKey, SNValue, L), L);
-put_1(_H, Key, Value, {snode, _, _}, L) when L > 30 ->
-    {lnode, [{Key, Value}]};
-put_1(_H, Key, Value, {lnode, List}, _L) when is_list(List) ->
+put_1(Hash, Key, Value, {snode, SNKey, SNValue}, L, M)
+  when L =< M ->
+    CN = {cnode, bitpos(Hash, L), [{snode, SNKey, SNValue}]},
+    put_1(Hash, Key, Value, CN, L, M);
+put_1(_Hash, Key1, Value1, {snode, Key2, Value2}, L, M)
+  when L > M ->
+    {lnode, [{Key1, Value1}, {Key2, Value2}]};
+put_1(_Hash, Key, Value, {lnode, List}, _L, _M)
+  when is_list(List) ->
     {lnode, [{Key, Value} | List]}.
 
-split(SNKey, SNValue, L) ->
-    {cnode, bitpos(hash(SNKey), L), [{snode, SNKey, SNValue}]}.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec delete(Key, Hamt1) -> Hamt2 when
-      Key :: binary(),
-      Hamt1 :: hamt(),
-      Hamt2 :: hamt().
-
-delete(Key, {hamt, nil})
-  when is_binary(Key) ->
-    {hamt, nil};
-delete(Key, {hamt, Node}=T)
-  when is_binary(Key) ->
-    case delete_1(hash(Key), Key, Node, 0) of
+%% @doc This function erases a given key and its value from a trie.
+-spec delete(Key::any(), Hamt1::hamt()) -> Hamt2::hamt().
+delete(_Key, {hamt, HashSize, nil}) ->
+    {hamt, HashSize, nil};
+delete(Key, {hamt, HashSize, Node}=T) ->
+    Hash = hash(HashSize, Key),
+    case delete_1(Hash, Key, Node, 0, max_depth(HashSize)) of
         not_found -> T;
-        {snode, Key, _} -> {hamt, nil};
-        {snode, _, _}=N -> {hamt, N};
-        {cnode, _, _}=N -> {hamt, N}
+        {snode, Key, _} -> {hamt, HashSize, nil};
+        {snode, _, _}=N -> {hamt, HashSize, N};
+        {cnode, _, _}=N -> {hamt, HashSize, N}
     end.
 
-delete_1(H, Key, {cnode, Bitmap, Nodes}, L)
-  when is_integer(L), L =< 30 ->
-    Bit = bitpos(H, L),
+delete_1(Hash, Key, {cnode, Bitmap, Nodes}, L, M)
+  when L =< M ->
+    Bit = bitpos(Hash, L),
     Idx = index(Bit, Bitmap),
     case exists(Bit, Bitmap) of
         true ->
-            case delete_1(H, Key, ba_get(Idx, Nodes), L + 5) of
+            case delete_1(Hash, Key, ba_get(Idx, Nodes), L + 5, M) of
                 {cnode, _, _}=CN ->
                     {cnode, Bitmap, ba_set(Idx, CN, Nodes)};
                 {snode, Key, _} ->
                     case length(Nodes) of
                         2 ->
-                            [{snode, _, _}=SN] = ba_del(Key, Nodes),
-                            SN;
-                        false ->
+                            [N] = ba_del(Key, Nodes), N;
+                        _ ->
                             {cnode, (Bitmap bxor Bit), ba_del(Key, Nodes)}
                     end;
                 {snode, _, _}=SN ->
@@ -270,43 +279,43 @@ delete_1(H, Key, {cnode, Bitmap, Nodes}, L)
         false ->
             not_found
     end;
-delete_1(_H, Key, {snode, Key, _}=SN, _L) ->
-    SN;
-delete_1(_H, _Key, {snode, _, _}, _L) ->
+delete_1(_Hash, _Key, {cnode, _Bitmap, _Nodes}, L, M)
+  when L > M ->
     not_found;
-delete_1(_H, Key, {lnode, List}, _L) ->
-    case length(List) > 2 of
-        true ->
-            {lnode, lists:filter(fun({snode, K, _}) when K =:= Key -> true;
-                                    ({snode, _, _}) -> false end,
-                                 List)};
-        false ->
-            {snode, Key, lists:keyfind(Key, 2, List)}
-    end.
+delete_1(_Hash, Key, {snode, Key, _}=SN, _L, _M) ->
+    SN;
+delete_1(_Hash, _Key, {snode, _, _}, _L, _M) ->
+    not_found;
+delete_1(_Hash, Key, {lnode, List}, _L, _M)
+  when length(List) > 2 ->
+    {lnode, lists:filter(fun({snode, K, _}) when K =:= Key -> true;
+                            ({snode, _, _}) -> false end,
+                         List)};
+delete_1(_Hash, Key, {lnode, List}, _L, _M) ->
+    {snode, Key, lists:keyfind(Key, 2, List)}.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec map(Function, Hamt1) -> Hamt2 when
+%% @doc Map calls Fun on successive keys and values of Hamt1 to return a new
+%%      value for each key. The evaluation order is undefined.
+-spec map(Function, Hamt1) -> Hamt2 when % TODO
       Function :: fun((K :: term(), V1 :: term()) -> V2 :: term()),
-      Hamt1 :: hamt(),
-      Hamt2 :: hamt().
-
-map(F, {hamt, _}=T) when is_function(F, 2) ->
-    {map_1(F, T)}.
+      Hamt1 :: hamt(), Hamt2 :: hamt().
+map(F, {hamt, HashSize, _}=T)
+  when is_function(F, 2) ->
+    {hamt, HashSize, map_1(F, T)}.
 
 map_1(_, nil) -> nil;
 map_1(F, {K, V, Smaller, Larger}) ->
     {K, F(K, V), map_1(F, Smaller), map_1(F, Larger)}.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec fold(Function, Hamt, Acc) -> Hamt when
-      Function :: fun((K :: term(), V :: term()) -> V2 :: term()),
-      Hamt :: hamt(),
-      Acc :: any().
-
-fold(Function, {hamt, Node}, Acc) ->
-    fold_1(Function, Acc, Node).
+%% @doc Calls Fun on successive keys and values of a trie together with an
+%%      extra argument Acc (short for accumulator). Fun must return a new
+%%      accumulator which is passed to the next call. Acc0 is returned if
+%%      the list is empty. The evaluation order is undefined.
+-spec fold(Fun, Hamt, Acc) -> Hamt when
+      Fun :: fun((K :: term(), V :: term(), Acc :: any()) -> Acc2 :: any()),
+      Hamt :: hamt(), Acc :: any().
+fold(Fun, {hamt, _, Node}, Acc) ->
+    fold_1(Fun, Acc, Node).
 
 fold_1(F, Acc, {snode, Key, Value}) ->
     F(Key, Value, Acc);
@@ -316,10 +325,14 @@ fold_1(F, Acc, {cnode, _, [Node]}) ->
     fold_1(F, Acc, Node);
 fold_1(F, Acc, {cnode, Bitmap, [Node | Nodes]}) ->
     fold_1(F, fold_1(F, Acc, Node), {cnode, Bitmap, Nodes});
-fold_1(F, Acc, {lnode, Nodes}) ->
-    lists:foldl(F, Acc, Nodes).
+fold_1(_F, Acc, {lnode, []}) ->
+    Acc;
+fold_1(F, Acc, {lnode, [{Key, Value}]}) ->
+    F(Key, Value, Acc);
+fold_1(F, Acc, {lnode, [{Key, Value} | KVPs]}) ->
+    fold_1(F, F(Key, Value, Acc), {lnode, KVPs}).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Below here are other supporting functions, not public API.
 
 ba_get(I, Nodes)
   when I =< 32, erlang:length(Nodes) =< 32 ->
@@ -346,8 +359,6 @@ ba_del(Key, Nodes) ->
                     ({lnode, _}) -> true
                  end, Nodes).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
 mask(Hash, Shift) ->
     (Hash bsr Shift) band 2#11111.
 
@@ -355,78 +366,60 @@ bitpos(Hash, Shift) ->
     1 bsl mask(Hash, Shift).
 
 index(Bit, Bitmap) ->
-    bitpop:count(Bitmap band (Bit - 1)) + 1. % Arrays start with index 1, not 0
+    bitpop:count(Bitmap band (Bit - 1)) + 1.
 
 exists(Bit, Bitmap) ->
     (Bitmap band Bit) =:= Bit.
 
+max_depth(B)
+  when B =:= 32 ->
+    30;
+max_depth(B)
+  when B =:= 64 ->
+    30;
+max_depth(B)
+  when B > 64 ->
+    (B div 5) * 5.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-hash(Key) when is_binary(Key) ->
-    erlang:phash2(Key).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 -ifdef(TEST).
 
-create_a_hamt_test_() ->
-    [?_assertEqual({hamt, nil}, hamt:new()),
-     ?_assertEqual(true, hamt:is_empty(hamt:new())),
+hamt_basics_test_() ->
+    [ ?_assertEqual(true, hamt:is_empty(hamt:new())),
      ?_assertEqual(false, hamt:is_empty(hamt:put(<<"k">>, <<"v">>, hamt:new()))),
-     ?_assertEqual(<<"v">>, hamt:get(<<"k">>, hamt:put(<<"k">>, <<"v">>, hamt:new())))].
+     ?_assertEqual(<<"v">>, hamt:get(<<"k">>, hamt:put(<<"k">>, <<"v">>, hamt:new()))),
+     ?_assertEqual({error, not_found}, hamt:get(<<"x">>, hamt:put(<<"k">>, <<"v">>, hamt:new())))].
 
-put_causes_split_root_snode_test() ->
-    ?assertEqual(hamt:put(<<"k2">>, <<"v2">>, {hamt,{snode,<<"k1">>,<<"v1">>}}),
-                 {hamt,{cnode,4456448,
-                        [{snode,<<"k1">>,<<"v1">>},{snode,<<"k2">>,<<"v2">>}]}}).
-
-put_causes_2_splits_test() ->
-    ?assertEqual(hamt:put(<<5>>,<<5>>,{hamt,{cnode,17563904,
-                                             [{snode,<<3>>,<<3>>},
-                                              {snode,<<1>>,<<1>>},
-                                              {snode,<<2>>,<<2>>},
-                                              {snode,<<4>>,<<4>>}]}}),
-                 {hamt,
-                  {cnode,17563904,
-                   [{snode,<<3>>,<<3>>},
-                    {snode,<<1>>,<<1>>},
-                    {cnode,131072,
-                     [{cnode,142606336,
-                       [{snode,<<2>>,<<2>>},
-                        {snode,<<5>>,<<5>>}]}]},
-                    {snode,<<4>>,<<4>>}]}}).
+put_cases_split_root_snode_test() ->
+    ?assertEqual(hamt:put(<<"k2">>, <<"v2">>, hamt:put(<<"k1">>, <<"v1">>, hamt:new())),
+                 hamt:from_list([{<<"k1">>, <<"v1">>}, {<<"k2">>, <<"v2">>}])).
 
 put_existing_key_replaces_value_test() ->
-    ?assertEqual(hamt:put(<<"k1">>, <<"v'">>,
-                          {hamt,{cnode,4456448,
-                                 [{snode,<<"k1">>,<<"v1">>},{snode,<<"k2">>,<<"v2">>}]}}),
-                          {hamt,{cnode,4456448,
-                                 [{snode,<<"k1">>,<<"v'">>},{snode,<<"k2">>,<<"v2">>}]}}).
+    ?assertEqual(hamt:get(<<"k1">>, hamt:put(<<"k1">>, <<"v'">>, hamt:put(<<"k1">>, <<"v1">>, hamt:new()))), <<"v'">>).
 
 del_from_empty_trie_test() ->
-    ?assertEqual(hamt:delete(<<"k1">>, {hamt, nil}), {hamt, nil}).
+    ?assertEqual(hamt:delete(<<"k1">>, hamt:new()), hamt:new()).
 
 del_last_key_in_trie_test() ->
-    ?assertEqual(hamt:delete(<<"k1">>, {hamt,{snode,<<"k1">>,<<"v1">>}}), {hamt, nil}).
+    ?assertEqual(hamt:delete(<<"k1">>, hamt:put(<<"k1">>, <<"v1">>, hamt:new())), hamt:new()).
 
 del_one_of_many_keys_test() ->
-    ?assertEqual(hamt:delete(<<"k1">>,
-                             {hamt,{cnode,4456448,
-                                    [{snode,<<"k1">>,<<"v1">>},
-                                     {snode,<<"k2">>,<<"v2">>}]}}),
-                 {hamt,{snode,<<"k2">>,<<"v2">>}}).
+    N = 100,
+    H1 = hamt:from_list([{random:uniform(N), <<X>>} || X <- lists:seq(1,N)]),
+    H2 = hamt:put(<<"k">>, <<"v">>, H1),
+    H3 = hamt:delete(<<"k">>, H2),
+    ?assertEqual(hamt:get(<<"k">>, H2), <<"v">>),
+    ?assertEqual(lists:usort(hamt:to_list(H3)), lists:usort(hamt:to_list(H1))),
+    ?assertEqual(hamt:get(<<"k">>, H3), {error, not_found}).
 
 del_causes_cascading_cnode_collapse_test() ->
-    ?assertEqual(hamt:delete(<<5>>, hamt:put([{<<X>>, <<X>>} || X <- lists:seq(1,6)], hamt:new())),
-                 {hamt,{cnode,17629440,
-                        [{snode,<<3>>,<<3>>},
-                         {snode,<<6>>,<<6>>},
-                         {snode,<<1>>,<<1>>},
-                         {snode,<<2>>,<<2>>},
-                         {snode,<<4>>,<<4>>}]}}).
+    H = hamt:put([{<<X>>, <<X>>} || X <- lists:seq(1,6)], hamt:new()),
+    ?assertNotEqual(lists:usort(hamt:to_list(hamt:delete(<<5>>, H))),
+                    lists:usort(hamt:to_list(H))).
 
 put_lots_test() ->
-    KVPs = [{<<X>>, <<X>>} || X <- lists:seq(1,10000)],
-    hamt:put(KVPs, hamt:new()).
+    N = 10000, hamt:from_list([{random:uniform(N), <<X>>} || X <- lists:seq(1,N)]).
 
 %% test() ->
 %%     test(500).
