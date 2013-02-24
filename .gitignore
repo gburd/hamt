@@ -4,3 +4,4 @@ ebin
 priv/*.so
 *.o
 *.beam
+*~
