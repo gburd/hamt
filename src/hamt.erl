@@ -53,7 +53,7 @@
 %% - is_empty(T): returns 'true' if T is an empty hamt, and 'false'
 %%   otherwise.
 %%
-%% - get(K, T): retreives the value stored with key K in hamt T or
+%% - get(K, T): retrieves the value stored with key K in hamt T or
 %%   `not_found' if the key is not present in the hamt.
 %%
 %% - put(K, V, T): inserts key K with value V into hamt T; if the key
@@ -79,8 +79,8 @@
 
 -ifdef(TEST).
 -ifdef(EQC).
-%include_lib("eqc/include/eqc.hrl").
-%include_lib("eqc/include/eqc_fsm.hrl").
+-include_lib("eqc/include/eqc.hrl").
+-include_lib("eqc/include/eqc_fsm.hrl").
 -endif.
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
@@ -92,32 +92,34 @@
          from_list/1, from_list/2, to_list/1]).
 
 %% The Hamt data structure consists of:
-%% - {hamt, nil | {SNode, CNode, LNode}
-%% - {hamt, nil | {hamt, {SNode, CNode, LNode}}
+%% - {hamt, nil | {SNode, CNode, LNode}}
 %%   - {snode, Key::binary(), Value::binary()}
 %%   - {cnode, Bitmap, Branch}
 %%   - {lnode, [snode]}
 
 -export_type([hamt/0, hamt_hash_fn/0]).
 
+-type hamt_hashsize() :: 32 | 64 | 128 | 160.
 -type hamt_hash_fn() :: {non_neg_integer(), fun((any()) -> binary())}.
 -type hamt_snode()   :: {snode, any(), any()}.
 -type hamt_lnode()   :: {lnode, [hamt_snode()]}.
 -type hamt_cnode()   :: {cnode, non_neg_integer(),
                          [hamt_snode() | hamt_cnode() | hamt_lnode()]}.
--opaque hamt()       :: {hamt, nil | hamt_hash_fn(), nil | hamt_cnode()}.
+-opaque hamt()       :: {hamt, hamt_hashsize(), nil} |
+                        {hamt, hamt_hashsize(), hamt_hash_fn(), nil} |
+                        {hamt, hamt_hashsize(), hamt_cnode()}.
 
-%% @doc Returns a new, empty trie that uses phash2 to generate
-%%      32bit hash codes for keys.
+%% @doc Returns a new, empty trie that uses
+%%      32-bit hash codes for keys.
 -spec new() -> hamt().
 new() ->    {hamt, 32, nil}.
 
 %% @doc Returns a new, empty trie that uses the specified
 %%      number of bits when hashing keys.
--spec new(32|64|128|160) -> hamt().
+-spec new(hamt_hashsize()) -> hamt().
 new(HashSize) ->  {hamt, HashSize, nil}.
 
--spec hash(32|64|128|160, any()) -> non_neg_integer().
+-spec hash(hamt_hashsize(), any()) -> non_neg_integer().
 hash(HashSize, X)
   when not is_binary(X) ->
     hash(HashSize, term_to_binary(X));
@@ -191,7 +193,7 @@ get_2(Key, [{_DifferentKey, _Value} | Rest]) ->
 from_list(List) ->
     put(List, hamt:new()).
 
--spec from_list([{any(), any()}], 32|64|128|160) -> hamt().
+-spec from_list([{any(), any()}], hamt_hashsize()) -> hamt().
 from_list(List, HashSize) ->
     put(List, hamt:new(HashSize)).
 
@@ -299,9 +301,9 @@ delete_1(_Hash, Key, {lnode, List}, _L, _M) ->
 -spec map(Function, Hamt1) -> Hamt2 when % TODO
       Function :: fun((K :: term(), V1 :: term()) -> V2 :: term()),
       Hamt1 :: hamt(), Hamt2 :: hamt().
-map(F, {hamt, HashSize, _}=T)
+map(F, {hamt, HashSize, Node})
   when is_function(F, 2) ->
-    {hamt, HashSize, map_1(F, T)}.
+    {hamt, HashSize, map_1(F, Node)}.
 
 map_1(_, nil) -> nil;
 map_1(F, {K, V, Smaller, Larger}) ->
@@ -311,9 +313,9 @@ map_1(F, {K, V, Smaller, Larger}) ->
 %%      extra argument Acc (short for accumulator). Fun must return a new
 %%      accumulator which is passed to the next call. Acc0 is returned if
 %%      the list is empty. The evaluation order is undefined.
--spec fold(Fun, Hamt, Acc) -> Hamt when
-      Fun :: fun((K :: term(), V :: term(), Acc :: any()) -> Acc2 :: any()),
-      Hamt :: hamt(), Acc :: any().
+-spec fold(Fun, Hamt, Acc1) -> Acc2 when
+      Fun :: fun((K :: term(), V :: term(), Acc0 :: any()) -> Acc :: any()),
+      Hamt :: hamt(), Acc1 :: any(), Acc2 :: any().
 fold(Fun, {hamt, _, Node}, Acc) ->
     fold_1(Fun, Acc, Node).
 
