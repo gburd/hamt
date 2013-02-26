@@ -319,6 +319,8 @@ map_1(F, {K, V, Smaller, Larger}) ->
 fold(Fun, {hamt, _, Node}, Acc) ->
     fold_1(Fun, Acc, Node).
 
+fold_1(_F, Acc, nil) ->
+    Acc;
 fold_1(F, Acc, {snode, Key, Value}) ->
     F(Key, Value, Acc);
 fold_1(_F, Acc, {cnode, _, []}) ->
