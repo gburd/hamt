@@ -4,16 +4,15 @@
 %%
 %% Copyright (C) 2013 Gregory Burd. All Rights Reserved.
 %%
-%% The contents of this file are subject to the Mozilla Public License,
-%% Version 2, (the "License"); you may not use this file except in
-%% compliance with the License. You should have received a copy of the
-%% Mozilla Public License along with this software. If not, it can be
-%% retrieved online at http://www.mozilla.org/MPL/
+%% The contents of this file are subject to the Mozilla Public License, Version
+%% 2, (the "License"); you may not use this file except in compliance with the
+%% License. You should have received a copy of the Mozilla Public License along
+%% with this software. If not, it can be retrieved online at
+%% http://www.mozilla.org/MPL/
 %%
-%% Software distributed under the License is distributed on an "AS IS"
-%% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
-%% the License for the specific language governing rights and limitations
-%% under the License.
+%% Software distributed under the License is distributed on an "AS IS" basis,
+%% WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License for
+%% the specific language governing rights and limitations under the License.
 %%
 %% %CopyrightEnd%
 %%
@@ -81,6 +80,7 @@
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eqc/include/eqc_fsm.hrl").
+-define(QC_OUT(P), eqc:on_output(fun(Str, Args) -> io:format(user, Str, Args) end, P)).
 -endif.
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
@@ -165,6 +165,7 @@ get(Key, {hamt, HashSize, {cnode, _Bitmap, _Nodes}=CN}) ->
             {error, not_found}
     end.
 
+-spec get_1(non_neg_integer(),_,non_neg_integer(),30 | 125 | 160) -> 'none' | {_,_}.
 get_1(Hash, {cnode, Bitmap, Nodes}, L, M) when L =< M ->
     Bit = bitpos(Hash, L),
     case exists(Bit, Bitmap) of
@@ -181,6 +182,7 @@ get_1(_Hash, {lnode, List}, _L, _M)
   when is_list(List) ->
     {list, List}.
 
+-spec get_2(_,maybe_improper_list()) -> 'none' | {_,_}.
 get_2(_Key, []) ->
     none;
 get_2(Key, [{Key, Value} | _Rest]) ->
@@ -215,6 +217,7 @@ put(Key, Value, {hamt, HashSize, nil}) ->
 put(Key, Value, {hamt, HashSize, Node}) ->
     {hamt, HashSize, put_1(hash(HashSize, Key), Key, Value, Node, 0, max_depth(HashSize))}.
 
+-spec put_1(non_neg_integer(),_,_,{'lnode',maybe_improper_list()} | {'cnode',integer(),[any()]} | {'snode',_,_},non_neg_integer(),30 | 125 | 160) -> {'lnode',nonempty_maybe_improper_list()} | {'cnode',integer(),[any(),...]} | {'snode',_,_}.
 put_1(Hash, Key, Value, {cnode, Bitmap, Nodes}, L, M)
   when L =< M ->
     Bit = bitpos(Hash, L),
@@ -230,7 +233,7 @@ put_1(_Hash, Key, Value, {snode, Key, _}, _L, _M) ->
     {snode, Key, Value};
 put_1(Hash, Key, Value, {snode, SNKey, SNValue}, L, M)
   when L =< M ->
-    CN = {cnode, bitpos(Hash, L), [{snode, SNKey, SNValue}]},
+    CN = {cnode, bitpos(Hash, L), [{snode, SNKey, SNValue}]}, %% TODO: wrong hash XXX
     put_1(Hash, Key, Value, CN, L, M);
 put_1(_Hash, Key1, Value1, {snode, Key2, Value2}, L, M)
   when L > M ->

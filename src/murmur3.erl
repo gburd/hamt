@@ -26,22 +26,27 @@
 
 -define(MASK32, 16#FFFFFFFF).
 
+-spec rotl32(integer(),13 | 15) -> non_neg_integer().
 rotl32(Num, R) -> ((Num bsl R) bor (Num bsr (32 - R))) band ?MASK32.
 
+-spec hash32_mmix(non_neg_integer()) -> non_neg_integer().
 hash32_mmix(K1) ->
     K2 = (K1 * 16#CC9E2D51) band ?MASK32,
     K3 = rotl32(K2, 15),
     (K3 * 16#1B873593) band ?MASK32.
 
+-spec hash32_fmix(integer()) -> non_neg_integer().
 hash32_fmix(H) ->
     H2 = ((H bxor (H bsr 16)) * 16#85EBCA6B) band ?MASK32,
     H3 = ((H2 bxor (H2 bsr 13)) * 16#C2B2AE35) band ?MASK32,
     H3 bxor (H3 bsr 16).
 
+-spec hash32_tail_mix(non_neg_integer(),integer()) -> integer().
 hash32_tail_mix(K1, Hash) ->
     Hash bxor hash32_mmix(K1).
 
 % 4-byte blocks
+-spec hash32_body(binary(),_) -> non_neg_integer().
 hash32_body(<<K1:32/little, Rest/binary>>, Hash) ->
     K2 = hash32_mmix(K1),
     Hash2 = Hash bxor K2,
@@ -54,15 +59,21 @@ hash32_body(<<K1:16/little>>, Hash) -> hash32_tail_mix(K1, Hash);
 hash32_body(<<K1:24/little>>, Hash) -> hash32_tail_mix(K1, Hash);
 hash32_body(<<>>, Hash) -> Hash.
 
+-spec hash32_impl(binary(),_) -> non_neg_integer().
 hash32_impl(Data, Seed) ->
     Len = byte_size(Data),
     hash32_fmix(hash32_body(Data, Seed) bxor Len).
 
+-spec hash32(_,_) -> non_neg_integer().
 hash32(Data, Seed) when is_binary(Data) -> hash32_impl(Data, Seed);
 hash32(Data, Seed) -> hash32(term_to_binary(Data), Seed).
 
+-spec hash32(_) -> non_neg_integer().
 hash32(Data) -> hash32(Data, 16#9E3779B9). % Seed is "golden ratio" FWIW.
 
+-spec hash(_) -> non_neg_integer().
 hash(Data) -> hash32(Data).
+-spec hash(32,_) -> non_neg_integer().
 hash(32, Data) -> hash32(Data).
+-spec hash(32,_,_) -> non_neg_integer().
 hash(32, Data, Seed) -> hash32(Data, Seed).

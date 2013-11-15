@@ -33,6 +33,11 @@ count(X, Acc) -> count((X band (X - 1)), (Acc + 1)).
 -endif.
 
 %-ifdef(WORKING_METHOD_2). % Works well enough
+-spec count(non_neg_integer()) -> char().
+-spec c1(pos_integer()) -> integer().
+-spec c2(pos_integer()) -> non_neg_integer().
+-spec c3(pos_integer()) -> non_neg_integer().
+-spec c4(pos_integer()) -> non_neg_integer().
 count(0) -> 0;
 count(X)
   when is_integer(X), X > 0, X < 16#FFFFFFFF ->
